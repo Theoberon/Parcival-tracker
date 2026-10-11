@@ -1,0 +1,82 @@
+-- Growing delay after failed logins.
+--   failures within the last 24 h (since the last successful login) -> wait before the next try:
+--   the 1st wrong try is free (a typo); the 2nd starts a 180-second cooldown, and every further
+--   failure adds 1 minute (4, 5, 6 minutes ...), capped at 30 minutes.
+-- Keyed by email text (registered or not) so the behaviour never reveals whether an email exists.
+-- Used by the `login` Edge Function and by the optional Auth password-verification hook.
+-- Replaces the earlier 5-failures/15-minutes hook logic and its login_attempts table.
+
+create table login_failures (
+  id        bigserial primary key,
+  email     citext not null,
+  failed_at timestamptz not null default now()
+);
+create index login_failures_email_idx on login_failures (email, failed_at);
+alter table login_failures enable row level security;   -- no policies: nobody through the API
+
+-- Seconds to wait given the number of recent failures. Tune the numbers here.
+create function _login_lock_seconds(p_failures int) returns int
+language sql immutable set search_path = pg_catalog as $$
+  select case when p_failures < 2 then 0                          -- 1st failure: free
+              else least(180 + (p_failures - 2) * 60, 30 * 60)    -- 2nd: 180 s, then +60 s each, max 30 minutes
+         end
+$$;
+
+-- {"locked": false} or {"locked": true, "retry_after_seconds": n}
+create function login_check(p_email citext) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_count int;
+  v_last timestamptz;
+  v_until timestamptz;
+begin
+  select count(*), max(failed_at) into v_count, v_last
+    from login_failures where email = p_email and failed_at > now() - interval '24 hours';
+  if v_count = 0 then return jsonb_build_object('locked', false); end if;
+  v_until := v_last + make_interval(secs => _login_lock_seconds(v_count));
+  if v_until > now() then
+    return jsonb_build_object('locked', true, 'retry_after_seconds', ceil(extract(epoch from v_until - now()))::int);
+  end if;
+  return jsonb_build_object('locked', false);
+end $$;
+
+-- Records one attempt and returns the new login_check() state. Success clears the failures.
+create function login_record(p_email citext, p_success boolean) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+begin
+  if p_success then
+    delete from login_failures where email = p_email;
+  else
+    insert into login_failures (email) values (p_email);
+    delete from login_failures where failed_at < now() - interval '2 days';
+  end if;
+  return login_check(p_email);
+end $$;
+
+-- Supabase Auth password-verification hook (Teams/Enterprise plans). Same policy, keyed by the
+-- user's email. While locked, even the correct key is rejected.
+create or replace function hook_password_verification_attempt(event jsonb) returns jsonb
+language plpgsql security definer set search_path = public, pg_temp as $$
+declare
+  v_email citext;
+  v_valid boolean := coalesce((event ->> 'valid')::boolean, false);
+begin
+  select email::citext into v_email from auth.users where id = (event ->> 'user_id')::uuid;
+  if v_email is null then return jsonb_build_object('decision', 'continue'); end if;
+  if (login_check(v_email) ->> 'locked')::boolean then
+    return jsonb_build_object('decision', 'reject', 'message', 'Email or key is incorrect.');
+  end if;
+  perform login_record(v_email, v_valid);
+  return jsonb_build_object('decision', 'continue');
+end $$;
+
+drop table if exists login_attempts;
+
+-- Only the service role (Edge Functions) and the Auth service may use these.
+revoke all on login_failures from public, anon, authenticated;
+grant all on login_failures to service_role;
+grant usage, select on sequence login_failures_id_seq to service_role;
+revoke all on function _login_lock_seconds(int), login_check(citext), login_record(citext, boolean) from public, anon, authenticated;
+grant execute on function login_check(citext), login_record(citext, boolean) to service_role;
+revoke all on function hook_password_verification_attempt(jsonb) from public, anon, authenticated;
+grant execute on function hook_password_verification_attempt(jsonb) to supabase_auth_admin;

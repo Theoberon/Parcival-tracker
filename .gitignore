@@ -1,0 +1,25 @@
+# secrets / credentials
+.env
+.env.*
+!.env.example
+*.pem
+credentials*.json
+service-account*.json
+.clasprc.json
+.clasp.json
+supabase/.temp/
+supabase/.branches/
+
+# deps / build
+node_modules/
+.next/
+out/
+*.tsbuildinfo
+.vercel/
+coverage/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+/preview/

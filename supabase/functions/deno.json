@@ -1,0 +1,4 @@
+{
+  "compilerOptions": { "strict": true },
+  "tasks": { "test": "deno test --allow-env --no-lock", "check": "deno check --no-lock */*.ts" }
+}

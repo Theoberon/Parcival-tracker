@@ -1,0 +1,8 @@
+{
+  "name": "web-e2e",
+  "private": true,
+  "type": "module",
+  "description": "Browser smoke test of the Next.js app against a tiny mock of the Supabase HTTP APIs (not the real database).",
+  "scripts": { "test": "node smoke.mjs" },
+  "dependencies": { "playwright-core": "^1.50.0" }
+}
