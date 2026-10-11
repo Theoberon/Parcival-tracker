@@ -96,7 +96,7 @@ Then add the two secrets under **Edge Functions → Secrets** (after the Apps Sc
 
 ## 4. Google Form, Sheet and Apps Script (you)
 
-Follow [`apps-script/README.md`](apps-script/README.md). In short: build the Form (email collection on, response editing **off**, team access code validated, consent text), link it to a Sheet, paste the four `.gs` files, set the Script Properties, run `installTriggers`, deploy the web app ("Execute as me", "Anyone") and put its URL into the Supabase secret in step 1.6.
+Follow [`apps-script/README.md`](apps-script/README.md). In short: build the Form (email collection on, response editing **off**, team access code validated, consent text), include links to the deployed website's `/terms` and `/privacy` pages in the Form description or consent text, link it to a Sheet, paste the four `.gs` files, set the Script Properties, run `installTriggers`, deploy the web app ("Execute as me", "Anyone") and put its URL into the Supabase secret in step 1.6.
 
 ## 5. Secrets: where each one lives
 
