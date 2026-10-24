@@ -36,7 +36,8 @@ end $$;
 -- ord:  display order = ranked, then active zero-point (alphabetical), then inactive.
 create function _standings(p_contest uuid)
 returns table (member_id uuid, email citext, display_name text, active boolean, points int,
-               tasks_completed int, reached_at timestamptz, pending_count int, rank int, ord int)
+               tasks_completed int, reached_at timestamptz, pending_count int, rank int, ord int,
+               category_counts jsonb)
 language sql stable security definer set search_path = public, pg_temp as $$
   with agg as (
     select m.id, m.email, m.display_name, m.active,
@@ -48,6 +49,25 @@ language sql stable security definer set search_path = public, pg_temp as $$
     left join submissions s on s.member_id = m.id
     where m.contest_id = p_contest
     group by m.id
+  ),
+  category_totals as (
+    select m.id as member_id, c.id as category_id, c.sort_order,
+           count(s.id)::int as task_count
+    from members m
+    join categories c on c.contest_id = p_contest and c.active
+    left join submissions s
+      on s.contest_id = p_contest
+     and s.member_id = m.id
+     and s.category_id = c.id
+     and s.status = 'approved'
+    where m.contest_id = p_contest
+    group by m.id, c.id, c.sort_order
+  ),
+  category_counts as (
+    select member_id,
+           jsonb_object_agg(category_id::text, task_count order by sort_order) as counts
+    from category_totals
+    group by member_id
   )
   select a.id, a.email, a.display_name, a.active, a.pts, a.tasks, a.reached, a.pend,
          case when a.active and a.pts > 0 then
@@ -55,8 +75,10 @@ language sql stable security definer set search_path = public, pg_temp as $$
                                order by a.pts desc, a.reached asc nulls last, lower(a.display_name)))::int
          end,
          (row_number() over (order by a.active desc, (a.pts > 0) desc, a.pts desc,
-                             a.reached asc nulls last, lower(a.display_name)))::int
+                             a.reached asc nulls last, lower(a.display_name)))::int,
+         coalesce(cc.counts, '{}'::jsonb)
   from agg a
+  left join category_counts cc on cc.member_id = a.id
 $$;
 
 -- Resubmission rules, shared by draft creation and the allowance check.
@@ -80,7 +102,8 @@ end $$;
 -- Shared (member or admin)
 -- ---------------------------------------------------------------------------------------------
 create function get_leaderboard()
-returns table (display_name text, points int, tasks_completed int, rank int, reached_at timestamptz, is_me boolean)
+returns table (display_name text, points int, tasks_completed int, rank int, reached_at timestamptz, is_me boolean,
+               category_counts jsonb)
 language plpgsql stable security definer set search_path = public, pg_temp as $$
 #variable_conflict use_column
 begin
@@ -89,7 +112,7 @@ begin
   end if;
   return query
     select st.display_name, st.points, st.tasks_completed, st.rank, st.reached_at,
-           (st.member_id = auth.uid())
+           (st.member_id = auth.uid()), st.category_counts
     from _standings(current_contest_id()) st
     where st.active
     order by st.ord;

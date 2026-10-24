@@ -20,6 +20,7 @@ export interface LeaderRow {
   rank: number | null;
   reached_at: string | null;
   is_me: boolean;
+  category_counts: Record<string, number> | null;
 }
 
 export interface AdminLeaderRow {

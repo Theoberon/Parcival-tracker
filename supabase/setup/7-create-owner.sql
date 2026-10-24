@@ -1,15 +1,35 @@
--- Run AFTER you created your own login in the dashboard:
+-- Run AFTER you created the user's login in the dashboard:
 --   Authentication -> Users -> Add user -> Create new user (email + password, tick "Auto Confirm User").
 --
--- Edit ONLY the email between the quotes below, then Run. Keep the single quotes.
---   right:  lower('jane@example.com')
---   wrong:  lower(jane@example.com)
+-- Set the email and role below, then Run. Use only 'owner' or 'admin' for the role.
+-- If the user already has an admins row, this updates its role and reactivates it.
 
-insert into admins (id, email, role)
-select id, email, 'owner'
-from auth.users
-where lower(email) = lower('PUT-YOUR-EMAIL-HERE@example.com');
+with settings as (
+  select lower('PUT-YOUR-EMAIL-HERE@example.com') as email,
+         'admin'::public.admin_role as desired_role
+),
+target_user as (
+  select u.id, u.email, s.desired_role
+  from auth.users u
+  cross join settings s
+  where lower(u.email) = s.email
+),
+upserted as (
+  insert into public.admins (id, email, role, active)
+  select id, email, desired_role, true
+  from target_user
+  on conflict (id) do update
+    set email = excluded.email,
+        role = excluded.role,
+        active = true
+  returning id, email, role, active
+)
+select id, email::text as email, role::text as role, active, 'created/updated' as result
+from upserted
+union all
+select null::uuid, s.email, null::text, null::boolean, 'AUTH USER NOT FOUND'
+from settings s
+where not exists (select 1 from target_user);
 
--- The result below should show exactly one row with role "owner".
--- If it shows no rows, the email does not match a user: check Authentication -> Users.
-select id, email, role from admins;
+-- Expect one row with the selected role and active = true.
+-- If result is AUTH USER NOT FOUND, check the email in Authentication -> Users.

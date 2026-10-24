@@ -4,7 +4,7 @@
 -- the `proofs` storage bucket (empty it or delete it in Storage if you want it gone) or other projects.
 -- After it runs, do parts 1 to 6 again in order.
 
-drop table if exists audit_log, key_requests, login_failures, submissions, categories, members, admins, contests cascade;
+drop table if exists audit_log, key_requests, login_failures, submissions, categories, members, admins, contests, platform_admins, organizations cascade;
 drop type if exists contest_status, submission_status, admin_role, actor_type cascade;
 
 do $$

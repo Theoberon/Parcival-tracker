@@ -10,11 +10,11 @@ mkdir -p "$out"; rm -f "$out"/[1-6]-*.sql
 
 # part file                 | title                                   | sources
 parts=(
-  "1-schema.sql|tables, rules that guard the data, audit log|20261009000100_schema.sql"
+  "1-schema.sql|tables, rules that guard the data, audit log|20261009000100_schema.sql 20261009000700_multi_org.sql"
   "2-functions.sql|the actions the site can perform (approve, withdraw, standings ...)|20261009000200_rpc.sql"
   "3-security.sql|who can read what (row-level security), private storage bucket|20261009000300_security.sql"
   "4-login-delay.sql|growing delay after failed logins|20261009000400_login_throttle.sql"
-  "5-titles.sql|contestant titles (admin-only)|20261009000500_member_title.sql 20261009000600_leaderboard_hides_title.sql"
+  "5-titles.sql|contestant titles and leaderboard category counts|20261009000500_member_title.sql 20261009000600_leaderboard_hides_title.sql 20261024124552_leaderboard_category_counts.sql"
 )
 # A friendly check at the top of each part: is the previous part done, and has this one not already been run?
 check() { # $1 = SQL condition that must be TRUE for the failure, $2 = message

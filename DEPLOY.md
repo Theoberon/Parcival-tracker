@@ -27,7 +27,7 @@ The setup is six numbered files in `supabase/setup/`. Run them **in order, one a
 | 2 | `2-functions.sql` | the actions the site performs (approve, withdraw, standings …) |
 | 3 | `3-security.sql` | who can read what, and the private `proofs` storage bucket |
 | 4 | `4-login-delay.sql` | the growing delay after failed logins |
-| 5 | `5-titles.sql` | contestant titles (admin-only) |
+| 5 | `5-titles.sql` | contestant titles (admin-only) and per-category leaderboard counts |
 | 6 | `6-starting-data.sql` | the starting contest and its four categories |
 
 For each file: **SQL Editor → New query**, copy the file, paste it, press **Run**. The whole file must arrive in one piece.
@@ -41,6 +41,8 @@ You should see "Success. No rows returned" after each file.
 Check at the end: **Table Editor** lists `contests`, `members`, `categories`, `submissions`, … and **Storage** shows a private bucket `proofs`. `select name, points from categories order by sort_order;` returns the four categories.
 
 If the editor warns about "destructive operations", that is the `revoke` statements that lock the tables down: confirm and run.
+
+**Updating an existing installation:** Do not rerun setup files 1–6. To add the per-category counts to an existing leaderboard, run `supabase/migrations/20261024124552_leaderboard_category_counts.sql` once in the Supabase SQL editor. It only replaces the leaderboard RPC; counts include approved submissions for each active category.
 
 **Not sure where you are?** Run `supabase/setup/0-where-am-i.sql` (it changes nothing). It shows `true` for each part that is already done; do the first `false` next.
 
@@ -56,9 +58,9 @@ If the editor warns about "destructive operations", that is the `revoke` stateme
 - **Failed-login delay (built in):** the website logs in through the `login` function, which counts failed attempts per email in the database. The 1st wrong try is free; the 2nd starts a 180-second (3-minute) cooldown, the 3rd means 4 minutes, the 4th 5 minutes, and so on up to 30 minutes. While waiting, even the correct key is refused, and a successful login resets the count. Counts older than 24 hours are forgotten. It applies the same way to admins and never reveals whether an email is registered. To change the numbers, edit the `_login_lock_seconds` function in `supabase/setup/4-login-delay.sql` before you run it.
   - This only covers people who log in through the website. Someone calling Supabase's login API directly is limited only by Supabase's own per-IP rate limits (**Authentication → Rate Limits**). On a **Teams/Enterprise** plan you can close that gap: **Authentication → Hooks → Password verification attempt** → Postgres function `public.hook_password_verification_attempt` applies the same delays to every login, and then add the function secret `LOGIN_THROTTLE_HOOK` = `on` so attempts are not counted twice.
 
-### 1.4 Create yourself as the owner
-1. **Authentication → Users → Add user → Create new user.** Your email + a strong password, tick **Auto Confirm User**.
-2. **SQL Editor:** open `supabase/setup/7-create-owner.sql`, put your email in, Run. The result should list one row with role `owner`.
+### 1.4 Create an owner or admin
+1. **Authentication → Users → Add user → Create new user.** Enter the user's email and a strong password, then tick **Auto Confirm User**.
+2. **SQL Editor:** open `supabase/setup/7-create-owner.sql`, set the exact email and choose `'owner'` or `'admin'` for `desired_role`, then Run. The result should show the selected role and `active = true`. If that Auth user already has an `admins` row, the script updates its role and reactivates it.
 
 Other admins are invited later from the website (`/admin/admins`).
 

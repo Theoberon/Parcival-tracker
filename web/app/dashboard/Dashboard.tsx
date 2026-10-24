@@ -97,7 +97,7 @@ export default function Dashboard({ userId, displayName, title }: { userId: stri
         </div>
       </Card>
 
-      <Leaderboard rows={board} />
+      <Leaderboard rows={board} categories={cats} />
 
       <div ref={formRef}>
         <SubmitPanel

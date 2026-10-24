@@ -33,13 +33,26 @@ begin
     from (select row_number() over () as ord, * from get_leaderboard()) x;
   select * into r from get_leaderboard() where is_me;
   leaked := (select bool_or(to_jsonb(x) ? 'title') from get_leaderboard() x);
-  perform t.logout();
   perform t.eq(names, array['Cy','Ben','Ann','Alpha','Gamma','zed'], 'order: points desc, earliest reached, then zero-point alphabetical; inactive excluded');
   perform t.eq(ranks, array[1,2,3,null,null,null]::int[], 'ranks 1..n, zero-point members unranked');
   perform t.eq(r.display_name, 'Ann', 'is_me row');
   perform t.eq(r.points, 5, 'my points');
+  perform t.eq(r.category_counts ->> t.cat('Converted Message / Order')::text, '1',
+               'approved converted order appears in its category count');
+  perform t.eq(r.category_counts ->> t.cat('New Message')::text, '0',
+               'other category count is zero');
+  select * into r from get_leaderboard() where display_name = 'Cy';
+  perform t.eq(r.category_counts ->> t.cat('Converted Message / Order')::text, '1',
+               'member category total tracks converted orders');
+  perform t.eq(r.category_counts ->> t.cat('New Message')::text, '1',
+               'member category total tracks messages');
+  select * into r from get_leaderboard() where display_name = 'Gamma';
+  perform t.eq(r.category_counts ->> t.cat('New Gig')::text, '0',
+               'rejected and reversed submissions do not count');
+  select * into r from get_leaderboard() where is_me;
   perform t.ok(leaked is false, 'the member leaderboard never includes titles');
   perform t.eq(r.tasks_completed, 1, 'tasks completed');
+  perform t.logout();
 
   -- admin view: includes inactive (last), pending counts, emails
   perform t.login(adm);
