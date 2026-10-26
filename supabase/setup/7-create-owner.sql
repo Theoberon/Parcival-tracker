@@ -15,12 +15,14 @@ target_user as (
   where lower(u.email) = s.email
 ),
 upserted as (
-  insert into public.admins (id, email, role, active)
-  select id, email, desired_role, true
+  insert into public.admins (id, email, role, active, organization_id)
+  select id, email, desired_role, true,
+         (select id from public.organizations where slug = 'default')
   from target_user
   on conflict (id) do update
     set email = excluded.email,
         role = excluded.role,
+        organization_id = excluded.organization_id,
         active = true
   returning id, email, role, active
 )

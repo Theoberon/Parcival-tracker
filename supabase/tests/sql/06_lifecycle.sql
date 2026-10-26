@@ -1,5 +1,56 @@
 begin;
 savepoint sp;
+
+-- Owners can end a setup/open contest immediately; pending items remain reviewable and the
+-- scheduled grace period does not delay publication after an explicit early end.
+do $$
+declare own uuid; adm uuid; mem uuid; s uuid;
+begin
+  own := t.mk_admin('early-owner@x.test', 'owner');
+  adm := t.mk_admin('early-admin@x.test');
+  mem := t.mk_member('early-member@x.test', 'Early Member');
+
+  perform t.set_times(now() + interval '1 day', now() + interval '2 days');
+  perform t.login(own);
+  perform end_contest('Stopping before launch');
+  perform t.logout();
+  perform t.eq(contest_effective_status(t.cid())::text, 'closed', 'setup contest can be ended early');
+  perform t.login(own);
+  perform extend_deadline(now() + interval '3 days', 'Resume before launch');
+  perform t.logout();
+  perform t.eq(contest_effective_status(t.cid())::text, 'setup', 'extending resumes a setup contest');
+
+  perform t.state_open();
+  s := t.submit(mem, 'New Account', 'early-account');
+
+  perform t.login(own);
+  perform t.fails($q$select end_contest('')$q$, 'reason_required');
+  perform end_contest('Ending the contest early');
+  perform t.logout();
+  perform t.eq(contest_effective_status(t.cid())::text, 'closed', 'early end closes immediately');
+  perform t.ok((select ended_at is not null from contests), 'early end timestamp is recorded');
+  perform t.fails(format($q$select t.draft(%L, 'New Account', 'too-late')$q$, mem), 'submissions_closed');
+  perform t.login(own);
+  perform t.fails($q$select publish_final('Still pending')$q$, 'pending_remaining');
+  perform t.logout();
+
+  perform t.approve(adm, s);
+  perform t.login(own);
+  perform publish_final('All early-end reviews complete');
+  perform t.logout();
+  perform t.eq(contest_effective_status(t.cid())::text, 'final', 'early-ended contest can publish before scheduled grace');
+
+  perform t.login(own);
+  perform reopen_contest('Correcting a result');
+  perform extend_deadline(now() + interval '2 days', 'Resume the contest');
+  perform t.logout();
+  perform t.ok((select ended_at is null from contests), 'extending the deadline reopens an early-ended contest');
+  perform t.ok(contest_effective_status(t.cid()) in ('setup', 'open'), 'reopened contest follows its scheduled dates');
+  perform t.ok(exists (select 1 from audit_log where action = 'contest.ended_early'), 'early end is audited');
+end $$;
+rollback to sp;
+savepoint sp;
+
 -- Whole contest lifecycle on short dates: setup -> open -> closed -> final -> reopen -> final -> export -> archive.
 do $$
 declare own uuid; adm uuid; a uuid; b uuid; s uuid; s2 uuid; r record; ra record;

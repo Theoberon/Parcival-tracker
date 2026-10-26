@@ -286,6 +286,12 @@ try {
     await a.getByText('submission.approved').waitFor();
     await a.goto(BASE + '/admin/board');
     await a.getByText('Fall Contest').waitFor();
+    await a.getByText('Second Contest').waitFor();
+    assert.deepEqual(
+      (await a.locator('section h2').allTextContents()).slice(0, 2),
+      ['Default organization', 'Second organisation'],
+      'own organisation leaderboard appears before other running organisations',
+    );
     assert.equal(await a.getByText('Zapier Builder').count(), 0, 'no titles on the projector board');
     await shot(a, '14-admin-board');
   });

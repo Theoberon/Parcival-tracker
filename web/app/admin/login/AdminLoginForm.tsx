@@ -3,6 +3,7 @@ import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { Alert, Button, Card, Field, Input } from '@/components/ui';
 import { loginVia } from '@/lib/api';
+import { organizationScopeFromCookie } from '@/lib/organization-scope';
 import { supabaseBrowser } from '@/lib/supabase/browser';
 
 export default function AdminLoginForm({ notice }: { notice: string }) {
@@ -31,15 +32,18 @@ export default function AdminLoginForm({ notice }: { notice: string }) {
       return;
     }
     // Only admins may stay logged in here.
-    const { data: admin } = await supabase.from('admins').select('id').eq('id', data.user.id).eq('active', true).maybeSingle();
-    if (!admin) {
+    const [{ data: admin }, { data: platformOwner }] = await Promise.all([
+      supabase.from('admins').select('id').eq('id', data.user.id).eq('active', true).maybeSingle(),
+      supabase.rpc('is_platform_admin'),
+    ]);
+    if (!admin && platformOwner !== true) {
       await supabase.auth.signOut();
       setError('Email or password is incorrect.');
       setBusy(false);
       return;
     }
     try { localStorage.setItem('admin:lastActive', String(Date.now())); } catch { /* storage may be unavailable */ }
-    router.replace('/admin');
+    router.replace(platformOwner === true && !organizationScopeFromCookie(document.cookie) ? '/admin/organizations' : '/admin');
     router.refresh();
   }
 

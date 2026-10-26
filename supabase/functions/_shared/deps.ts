@@ -4,7 +4,7 @@ import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2';
 export interface Deps {
   env: (name: string) => string | undefined;
   /** Client acting as the logged-in user (RLS applies, auth.uid() is set). */
-  userClient: (token: string) => SupabaseClient;
+  userClient: (token: string, organizationId?: string) => SupabaseClient;
   /** Client with only the public anon key (for verifying a password like the browser would). */
   anon: () => SupabaseClient;
   /** Service-role client. Only for work the user must not do themselves (storage, auth admin). */
@@ -25,9 +25,14 @@ export function realDeps(): Deps {
   let admin: SupabaseClient | undefined;
   return {
     env: (n) => Deno.env.get(n),
-    userClient: (token) =>
+    userClient: (token, organizationId) =>
       createClient(need('SUPABASE_URL'), need('SUPABASE_ANON_KEY'), {
-        global: { headers: { Authorization: `Bearer ${token}` } },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(organizationId ? { 'x-organization-id': organizationId } : {}),
+          },
+        },
         auth: { persistSession: false, autoRefreshToken: false },
       }),
     anon: () =>

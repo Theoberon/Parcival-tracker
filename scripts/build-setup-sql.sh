@@ -14,7 +14,7 @@ parts=(
   "2-functions.sql|the actions the site can perform (approve, withdraw, standings ...)|20261009000200_rpc.sql"
   "3-security.sql|who can read what (row-level security), private storage bucket|20261009000300_security.sql"
   "4-login-delay.sql|growing delay after failed logins|20261009000400_login_throttle.sql"
-  "5-titles.sql|contestant titles and leaderboard category counts|20261009000500_member_title.sql 20261009000600_leaderboard_hides_title.sql 20261024124552_leaderboard_category_counts.sql"
+  "5-titles.sql|contestant titles, organisation isolation, sequential contest retention, and cross-organisation leaderboards|20261009000500_member_title.sql 20261009000600_leaderboard_hides_title.sql 20261024124552_leaderboard_category_counts.sql 20261024152538_organization_isolation.sql 20261024163531_platform_owner_org_management.sql 20261025064413_end_contest_early.sql 20261025070355_organization_next_contest.sql 20261026093834_all_organization_leaderboards.sql"
 )
 # A friendly check at the top of each part: is the previous part done, and has this one not already been run?
 check() { # $1 = SQL condition that must be TRUE for the failure, $2 = message

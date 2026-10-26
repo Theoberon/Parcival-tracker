@@ -56,10 +56,11 @@ class FakeSheet {
 class FakeSupabase {
   constructor() {
     this.down = false;
+    this.organizationId = 'organization-1';
     this.contestId = 'contest-1';
-    this.contest = { id: this.contestId, start_at: '2026-01-01T00:00:00Z', end_at: '2999-01-01T00:00:00Z', grace_minutes: 10 };
+    this.contest = { id: this.contestId, organization_id: this.organizationId, created_at: '2026-01-01T00:00:00Z', start_at: '2026-01-01T00:00:00Z', end_at: '2999-01-01T00:00:00Z', grace_minutes: 10 };
     this.status = 'open';
-    this.members = []; this.admins = []; this.users = new Map(); this.sessions = new Map();
+    this.members = []; this.organizationMembers = []; this.admins = []; this.users = new Map(); this.sessions = new Map();
   }
   login(email, key) {
     const u = [...this.users.values()].find(x => x.email.toLowerCase() === email.toLowerCase());
@@ -87,20 +88,39 @@ class FakeSupabase {
       return [200, { id: user.id }];
     }
     if ((m = p.match(/^\/rest\/v1\/rpc\/(.+)$/)) && method === 'post') {
-      if (m[1] === 'contest_effective_status') return [200, this.status];
       if (m[1] === 'revoke_user_sessions') { this.sessions.set(body.p_user, 0); return [200, null]; }
       if (m[1] === 'auth_user_id_by_email') {
         const x = [...this.users.values()].find(v => v.email.toLowerCase() === body.p_email.toLowerCase());
         return [200, x ? x.id : null];
       }
+      if (m[1] === 'register_organization_member') {
+        const base = body.p_display_name.slice(0, 60);
+        let name = base, suffix = 1;
+        while (this.organizationMembers.some(x => x.organization_id === body.p_organization_id &&
+          x.display_name.toLowerCase() === name.toLowerCase())) {
+          suffix++;
+          name = base.slice(0, 60 - String(suffix).length - 1) + ' ' + suffix;
+        }
+        const member = {
+          id: body.p_member_id, organization_id: body.p_organization_id,
+          email: body.p_email, display_name: name, title: body.p_title || null,
+          key_version: 1, active: true, registered_at: new Date().toISOString()
+        };
+        this.organizationMembers.push(member);
+        if (['setup', 'open'].includes(this.status)) {
+          this.members.push({ ...member, contest_id: this.contestId });
+        }
+        return [200, [member]];
+      }
       return [404, { message: 'no such rpc' }];
     }
-    if ((m = p.match(/^\/rest\/v1\/(contests|members|admins)$/))) {
+    if ((m = p.match(/^\/rest\/v1\/(contests|members|organization_members|admins)$/))) {
       const table = m[1];
       if (method === 'get' && table === 'contests') return [200, [this.contest]];
-      const rows = table === 'members' ? this.members : this.admins;
+      const rows = table === 'members' ? this.members :
+        table === 'organization_members' ? this.organizationMembers : this.admins;
       const match = (row) => [...u.searchParams.entries()].every(([k, v]) => {
-        if (k === 'select' || k === 'order') return true;
+        if (k === 'select' || k === 'order' || k === 'limit') return true;
         const [op, ...rest] = v.split('.'); const val = rest.join('.');
         const cell = String(row[k]).toLowerCase();
         if (op === 'eq') return cell === val.toLowerCase();
@@ -133,9 +153,9 @@ function makeEnv(opts = {}) {
   const orphansSheets = {};
   const sent = [];
   const form = { accepting: true, isAcceptingResponses() { return this.accepting; }, setAcceptingResponses(v) { this.accepting = v; } };
-  const state = { mailQuota: 100, mailFails: false, alerts: [], menus: [], triggers: [] };
+  const state = { mailQuota: 100, mailFails: false, alerts: [], menus: [], triggers: [], errors: [] };
   const props = {
-    SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_KEY: 'service-key-secret', CONTEST_ID: sb.contestId,
+    SUPABASE_URL: 'https://example.supabase.co', SUPABASE_SERVICE_KEY: 'service-key-secret', ORGANIZATION_ID: sb.organizationId,
     RESEND_SHARED_SECRET: 'shared-secret-value', SITE_URL: 'https://contest.example.com', SUPPORT_CONTACT: 'help@example.com',
   };
   const active = { range: null };
@@ -146,7 +166,7 @@ function makeEnv(opts = {}) {
     getActiveRange: () => active.range,
   };
   const ctx = {
-    console,
+    console: { error: (...args) => state.errors.push(args.join(' ')) },
     Date, Math, JSON, String, Number, Object, Array, isNaN, parseInt, encodeURIComponent, Error, RegExp,
     PropertiesService: { getScriptProperties: () => ({ getProperty: (k) => props[k] || null }) },
     LockService: { getScriptLock: () => ({ waitLock() {}, releaseLock() {} }) },

@@ -158,6 +158,48 @@ export function createMock() {
       if (!user) return send(res, 401, { code: 'PGRST301', message: 'JWT required' });
       if (fn === 'get_contest_banner') return send(res, 200, [banner()]);
       if (fn === 'get_leaderboard') return send(res, 200, state.board.map(({ title, ...r }) => ({ ...r, is_me: user.kind === 'member' ? r.is_me : false })));
+      if (fn === 'get_running_organization_leaderboards') {
+        const categories = state.cats.filter((category) => category.active);
+        const primary = state.board.map((row, i) => ({
+          organization_id: 'org-1',
+          organization_name: 'Default organization',
+          is_current_organization: true,
+          contest_id: 'k1',
+          contest_name: 'Fall Contest',
+          start_at: iso(-1440),
+          end_at: iso(1440),
+          categories,
+          member_id: `m${i + 1}`,
+          display_name: row.display_name,
+          points: row.points,
+          tasks_completed: row.tasks_completed,
+          rank: row.rank,
+          is_me: false,
+          category_counts: { c1: i === 0 ? 2 : 0, c2: i === 0 ? 1 : 0 },
+          member_order: i + 1,
+        }));
+        return send(res, 200, [
+          ...primary,
+          {
+            organization_id: 'org-2',
+            organization_name: 'Second organisation',
+            is_current_organization: false,
+            contest_id: 'k2',
+            contest_name: 'Second Contest',
+            start_at: iso(-1440),
+            end_at: iso(1440),
+            categories: [{ id: 'c4', name: 'New Account', points: 2, reference_label: 'Username', reference_hint: '', active: true, sort_order: 1 }],
+            member_id: 'm-second',
+            display_name: 'Morgan',
+            points: 3,
+            tasks_completed: 2,
+            rank: 1,
+            is_me: false,
+            category_counts: { c4: 1 },
+            member_order: 1,
+          },
+        ]);
+      }
       if (fn === 'my_submissions') return send(res, 200, state.subs);
       if (fn === 'get_admin_leaderboard') return send(res, 200, state.board.map((r, i) => ({ member_id: 'm' + i, email: r.display_name.toLowerCase() + '@x.test', display_name: r.display_name, title: r.title, points: r.points,
         tasks_completed: r.tasks_completed, rank: r.rank, reached_at: r.reached_at, pending_count: i === 1 ? 1 : 0, active: r.display_name !== 'Alpha' })));

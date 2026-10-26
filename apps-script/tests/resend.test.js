@@ -26,6 +26,7 @@ test('doPost with the secret rotates the key and emails the member', () => {
   assert.equal(e.sb.login('jane@example.com', old), false);
   assert.ok(e.sb.login('jane@example.com', e.lastKey()));
   assert.equal(e.sb.members[0].key_version, 2);
+  assert.equal(e.sb.organizationMembers[0].key_version, 2, 'roster key version stays in sync');
   assert.equal(e.sheet.val(row, 'Key version'), 2, 'Sheet bookkeeping updated');
 });
 
@@ -35,6 +36,7 @@ test('doPost reveals nothing about unknown or deactivated emails', () => {
   const old = e.lastKey();
   assert.equal(post(e, { secret: 'shared-secret-value', email: 'nobody@example.com' }), 'ok');
   e.sb.members[0].active = false;
+  e.sb.organizationMembers[0].active = false;
   assert.equal(post(e, { secret: 'shared-secret-value', email: 'jane@example.com' }), 'ok');
   assert.equal(e.sent.length, 1, 'nothing sent');
   assert.ok(e.sb.login('jane@example.com', old), 'key untouched');

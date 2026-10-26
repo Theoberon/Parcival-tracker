@@ -27,12 +27,12 @@ The setup is six numbered files in `supabase/setup/`. Run them **in order, one a
 | 2 | `2-functions.sql` | the actions the site performs (approve, withdraw, standings …) |
 | 3 | `3-security.sql` | who can read what, and the private `proofs` storage bucket |
 | 4 | `4-login-delay.sql` | the growing delay after failed logins |
-| 5 | `5-titles.sql` | contestant titles (admin-only) and per-category leaderboard counts |
+| 5 | `5-titles.sql` | contestant titles, per-category counts, organisation isolation, and cross-organisation leaderboards |
 | 6 | `6-starting-data.sql` | the starting contest and its four categories |
 
 For each file: **SQL Editor → New query**, copy the file, paste it, press **Run**. The whole file must arrive in one piece.
 
-- **Copy reliably:** open the file on GitHub (branch `claude/build-plan-execution-j1yu7b`, folder `supabase/setup`) and use the **Copy raw file** button above the code (or open **Raw** and press Ctrl/Cmd+A, then Ctrl/Cmd+C). Do not copy from a scrolling code preview that only draws the lines currently on screen: it can silently copy just part of the file.
+- **Copy reliably:** open the file in the repository's `supabase/setup` folder on GitHub and use the **Copy raw file** button above the code (or open **Raw** and press Ctrl/Cmd+A, then Ctrl/Cmd+C). Do not copy from a scrolling code preview that only draws the lines currently on screen: it can silently copy just part of the file.
 - **Check the paste:** the last line of every file reads `-- END OF PART N`. Press Ctrl/Cmd+End in the editor; if you do not land on that line, the paste is incomplete (clear the editor and copy again).
 - A cut file fails with odd errors such as `syntax error at or near "new"` or `at or near "$$"`: they mean the editor received half a function.
 
@@ -43,6 +43,45 @@ Check at the end: **Table Editor** lists `contests`, `members`, `categories`, `s
 If the editor warns about "destructive operations", that is the `revoke` statements that lock the tables down: confirm and run.
 
 **Updating an existing installation:** Do not rerun setup files 1–6. To add the per-category counts to an existing leaderboard, run `supabase/migrations/20261024124552_leaderboard_category_counts.sql` once in the Supabase SQL editor. It only replaces the leaderboard RPC; counts include approved submissions for each active category.
+
+**Multi-organisation access:** Part 1 creates the organisation tables and attaches existing records to the default organisation. Part 5 applies tenant isolation and the platform-owner organisation manager. Members and organisation admins are routed automatically to the organisation on their account; there is no organisation chooser at login. The Apps Script registration flow may keep sending only `contest_id`; the database derives the organisation from that contest. A Supabase Auth email/account belongs to one organisation and cannot use separate keys for multiple organisations.
+
+**Cross-organisation leaderboards:** Admins and owners can open **Board** to compare all currently running organisation contests, with their own or selected organisation first. For an existing database, apply `supabase/migrations/20261026093834_all_organization_leaderboards.sql` in the SQL editor. This adds a permission-checked read-only RPC and does not modify contest or participant data; do not rerun setup files 1–6.
+
+On an existing database, first ensure `20261009000700_multi_org.sql` is applied, then run `supabase/migrations/20261024152538_organization_isolation.sql` and `supabase/migrations/20261024163531_platform_owner_org_management.sql` once each, in that order. For a new database, run the complete updated Part 5. Regenerate and redeploy the `admin-manage` and `contest-export` Edge Functions from their files in `supabase/functions-dashboard/` so they forward the selected-organisation context.
+
+**End a contest early:** apply `supabase/migrations/20261025064413_end_contest_early.sql` once on an existing database (new-database setup Part 5 includes it). An owner can then open **Contest → End contest now**. This immediately prevents contest submissions while leaving pending reviews available; publishing final results still requires all pending items to be reviewed, but does not wait for the scheduled deadline or grace period. Organisation onboarding remains available: people who sign up after the contest closes are stored on the persistent roster and join the next contest.
+
+**Start the next contest:** apply `supabase/migrations/20261025070355_organization_next_contest.sql` after the early-ending migration on an existing database (new-database setup Part 5 includes both). Redeploy `cleanup-drafts` from `supabase/functions-dashboard/cleanup-drafts.ts` and keep **Verify JWT OFF** (the function checks its service-role caller). After final results are published, the organisation owner sees **Contest → Start a new contest**. This creates the next contest with the four standard task categories, moves each participant's existing Auth account and login key into it, and stops using the prior contest. The prior leaderboard is shown in the owner dashboard from the new contest's start through the following seven days; then the scheduled `cleanup-drafts` function deletes its standings snapshot, archived contest/audit records and all screenshot objects. If screenshot deletion fails, the history remains and cleanup retries on the next 15-minute run.
+
+The Form is for organisation onboarding, not contest registration. Set up **one Form, response Sheet and Apps Script project per organisation**, and set its `ORGANIZATION_ID` Script Property once. Keep that same Form and Sheet between contests; do not create a new Form for each contest or change its Script Property. New signups are written to the organisation roster at any time. If a contest is in setup/open, a signup also joins it; otherwise the roster member is automatically added when the next contest starts. Existing roster members are carried into every new contest with the same Auth account and login key. Re-registering an active member does not rotate the key; **Resend my key** still issues a replacement and invalidates the old key. The Form remains open unless the owner manually chooses **Close registration now** in the Sheet menu. If the previous script already closed a Form at the contest end, reopen **Accepting responses** once in the Form.
+
+The organisation migration does not use `login_attempts`: Part 4 replaced that legacy table with `login_failures` keyed by email and dropped `login_attempts`. If an earlier copy of `20261009000700_multi_org.sql` failed with `relation "login_attempts" does not exist`, use the current migration file; do not recreate the obsolete table. The migration replaces the existing `is_admin()`, `is_owner()` and `is_member()` functions, so it also works when those functions are already present in the base schema. Before retrying after any error, check whether the failed SQL run left `organizations` or `platform_admins` behind, since the migration itself is not intended to be run twice.
+
+If the admin dashboard says `Could not find the function public.is_platform_admin without parameters in the schema cache`, run the two migrations above if they are not already applied, then run this in the Supabase SQL editor:
+
+```sql
+notify pgrst, 'reload schema';
+select to_regprocedure('public.is_platform_admin()') as platform_admin_check,
+       to_regprocedure('public.platform_owner_create_organization(text,text,text,timestamptz,timestamptz)') as create_organization;
+```
+
+Both results should be non-null. An existing organisation admin can still use the regular admin dashboard while the platform-owner database setup is pending.
+
+**Enable the platform owner:** In the Supabase SQL editor, promote an existing active owner account once (replace the email):
+
+```sql
+insert into platform_admins (id, email)
+select id, email
+from admins
+where lower(email) = lower('your-owner@example.com')
+  and active
+  and role = 'owner'
+on conflict (id) do update set email = excluded.email, active = true
+returning id, email;
+```
+
+After Part 5 and the platform-owner promotion are applied, sign in to the existing admin dashboard and open **Organisations**. Create the organisation and its first contest there; the four standard task categories are added automatically. Use the organisation switcher or **Manage contest** to enter it. From that organisation's **Admins** page, invite its owner/admins; configure its Apps Script once with that organisation's `ORGANIZATION_ID`. Platform owners can switch between organisations and use the existing contest tools, while each organisation's members/admins remain isolated to their own organisation.
 
 **Not sure where you are?** Run `supabase/setup/0-where-am-i.sql` (it changes nothing). It shows `true` for each part that is already done; do the first `false` next.
 

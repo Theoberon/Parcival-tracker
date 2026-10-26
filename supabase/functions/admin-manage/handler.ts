@@ -83,7 +83,7 @@ export async function handle(req: Request, deps: Deps): Promise<Response> {
   const action = body?.action;
   if (typeof action !== 'string') return errorResponse('bad_request', 'action is required.');
 
-  const user = deps.userClient(token);
+  const user = deps.userClient(token, req.headers.get('x-organization-id') ?? undefined);
   const admin = deps.admin();
 
   // Roles are decided by the database, with the caller's own JWT.

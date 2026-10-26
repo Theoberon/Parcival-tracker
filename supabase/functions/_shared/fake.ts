@@ -15,6 +15,7 @@ class Builder {
   delete() { this.action = 'delete'; return this; }
   eq(c: string, v: unknown) { this.filters.push([c, 'eq', v]); return this; }
   lt(c: string, v: unknown) { this.filters.push([c, 'lt', v]); return this; }
+  lte(c: string, v: unknown) { this.filters.push([c, 'lte', v]); return this; }
   in(c: string, v: unknown) { this.filters.push([c, 'in', v]); return this; }
   order() { return this; }
   limit() { return this; }
@@ -102,7 +103,7 @@ export function fakeDeps(opts: { user?: FakeOpts; admin?: FakeOpts; anon?: FakeO
   const env: Record<string, string> = { SITE_URL: 'https://contest.example.com', ...opts.env };
   const deps: Deps = {
     env: (n) => env[n],
-    userClient: (token) => { userCalls.push({ name: 'userClient', args: [token] }); return fakeClient({ ...opts.user }, userCalls) as any; },
+    userClient: (token, organizationId) => { userCalls.push({ name: 'userClient', args: [token, organizationId] }); return fakeClient({ ...opts.user }, userCalls) as any; },
     admin: () => fakeClient({ user: opts.user?.user, ...opts.admin }, calls) as any,
     anon: () => fakeClient({ ...opts.anon }, calls) as any,
     fetch: opts.fetch ?? (() => Promise.reject(new Error('unexpected fetch'))),

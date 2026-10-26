@@ -1,79 +1,148 @@
 'use client';
 import Link from 'next/link';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { callRpc } from '@/lib/api';
 import CategoryIcon from '@/components/CategoryIcon';
-import type { Banner, Category, LeaderRow } from '@/lib/types';
+import type { Category } from '@/lib/types';
 
-// Full-screen leaderboard for projecting. Refreshes every 30 seconds.
+interface RunningLeaderboardRow {
+  organization_id: string;
+  organization_name: string;
+  is_current_organization: boolean;
+  contest_id: string;
+  contest_name: string;
+  start_at: string;
+  end_at: string;
+  categories: Category[];
+  member_id: string | null;
+  display_name: string | null;
+  points: number | null;
+  tasks_completed: number | null;
+  rank: number | null;
+  is_me: boolean;
+  category_counts: Record<string, number> | null;
+  member_order: number | null;
+}
+
+interface OrganizationLeaderboard {
+  organizationId: string;
+  organizationName: string;
+  isCurrentOrganization: boolean;
+  contestId: string;
+  contestName: string;
+  categories: Category[];
+  rows: RunningLeaderboardRow[];
+}
+
+function groupLeaderboards(rows: RunningLeaderboardRow[]): OrganizationLeaderboard[] {
+  const groups = new Map<string, OrganizationLeaderboard>();
+  for (const row of rows) {
+    let group = groups.get(row.contest_id);
+    if (!group) {
+      group = {
+        organizationId: row.organization_id,
+        organizationName: row.organization_name,
+        isCurrentOrganization: row.is_current_organization,
+        contestId: row.contest_id,
+        contestName: row.contest_name,
+        categories: row.categories,
+        rows: [],
+      };
+      groups.set(row.contest_id, group);
+    }
+    if (row.member_id && row.display_name !== null) group.rows.push(row);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(b.isCurrentOrganization) - Number(a.isCurrentOrganization)
+      || a.organizationName.localeCompare(b.organizationName),
+  );
+}
+
 export default function Board() {
-  const [rows, setRows] = useState<LeaderRow[]>([]);
-  const [categories, setCategories] = useState<Category[]>([]);
-  const [banner, setBanner] = useState<Banner | null>(null);
+  const [rows, setRows] = useState<RunningLeaderboardRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
-    const [l, b] = await Promise.all([
-      callRpc<LeaderRow[]>('get_leaderboard'),
-      callRpc<Banner[]>('get_contest_banner'),
-    ]);
-    if (l.ok) setRows(l.data);
-    if (b.ok) setBanner(b.data[0] ?? null);
-
-    const { data, error } = await (await import('@/lib/supabase/browser')).supabaseBrowser()
-      .from('categories')
-      .select('id, name, points, reference_label, reference_hint, active, sort_order')
-      .order('sort_order');
-    if (!error) setCategories((data as Category[] | null ?? []).filter((cat) => cat.active).sort((a, b) => a.sort_order - b.sort_order));
+    const result = await callRpc<RunningLeaderboardRow[]>('get_running_organization_leaderboards');
+    if (!result.ok) {
+      setError(result.message);
+      return;
+    }
+    setError(null);
+    setRows(result.data);
   }, []);
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 30_000);
-    return () => clearInterval(t);
+    const timer = setInterval(load, 30_000);
+    return () => clearInterval(timer);
   }, [load]);
 
-  const label = banner?.status === 'final' || banner?.status === 'archived' ? 'Final results'
-    : banner?.status === 'closed' ? `Provisional · ${banner.pending_count} under review` : banner?.status === 'setup' ? 'Starting soon' : 'Live';
-
-  const visibleCategories = categories;
-  const gridTemplateColumns = `3rem minmax(12rem, 1fr) repeat(${visibleCategories.length}, 4rem) 5rem`;
+  const leaderboards = useMemo(() => rows ? groupLeaderboards(rows) : null, [rows]);
 
   return (
     <main className="min-h-screen bg-slate-950 px-6 py-8 text-white sm:px-12">
       <div className="mx-auto max-w-6xl">
-        <div className="mb-6 flex items-baseline justify-between gap-4">
-          <h1 className="text-3xl font-bold sm:text-5xl">{banner?.name ?? 'Leaderboard'}</h1>
-          <span className="rounded-full bg-white/10 px-4 py-1 text-sm sm:text-lg">{label}</span>
-        </div>
-        <div className="overflow-x-auto">
-          <div className="min-w-max">
-            <div className="mb-2 grid items-center gap-4 border-b border-white/10 pb-2 text-sm uppercase tracking-wider text-slate-300" style={{ gridTemplateColumns }}>
-              <span className="text-right">#</span>
-              <span>Name</span>
-              {visibleCategories.map((cat) => (
-                <span key={cat.id} className="text-center" title={cat.name} aria-label={cat.name}>
-                  <CategoryIcon name={cat.name} />
-                  <span className="sr-only">{cat.name}</span>
-                </span>
-              ))}
-              <span className="text-right">Points</span>
-            </div>
-            <ol className="divide-y divide-white/10">
-              {rows.map((r, i) => (
-                <li key={i} className={`grid items-center gap-4 py-3 text-xl sm:py-4 sm:text-2xl ${r.rank === 1 ? 'text-amber-300' : r.rank === 2 ? 'text-slate-200' : r.rank === 3 ? 'text-orange-300' : ''} ${r.rank === null ? 'text-slate-500' : ''}`} style={{ gridTemplateColumns }}>
-                  <span className="text-right tabular-nums">{r.rank ?? ''}</span>
-                  <span className="truncate font-medium">{r.display_name}</span>
-                  {visibleCategories.map((cat) => (
-                    <span key={cat.id} className="text-center tabular-nums">{r.category_counts?.[cat.id] ?? 0}</span>
-                  ))}
-                  <span className="text-right font-semibold tabular-nums">{r.points}</span>
-                </li>
-              ))}
-            </ol>
+        <div className="mb-8 flex flex-wrap items-baseline justify-between gap-4">
+          <div>
+            <h1 className="text-3xl font-bold sm:text-5xl">Running organisation leaderboards</h1>
+            <p className="mt-2 text-sm text-slate-400"></p>
           </div>
+          <Link href="/admin" className="text-sm text-slate-300 underline">Back to admin</Link>
         </div>
-        <div className="mt-10 flex gap-4 text-sm text-slate-400">
-          <Link href="/admin" className="underline">Back to admin</Link>
+
+        {error ? <p role="alert" className="rounded-xl border border-rose-300/20 bg-rose-300/10 p-4 text-rose-100">{error}</p> : null}
+        {leaderboards === null && !error ? <p className="text-slate-400">Loading leaderboards…</p> : null}
+        {leaderboards?.length === 0 ? <p className="rounded-xl border border-white/10 p-6 text-slate-300">There are no running organisation contests right now.</p> : null}
+
+        <div className="space-y-6">
+          {leaderboards?.map((board) => {
+            const categories = board.categories.filter((category) => category.active)
+              .sort((a, b) => a.sort_order - b.sort_order);
+            const gridTemplateColumns = `3rem minmax(12rem, 1fr) repeat(${categories.length}, 4rem) 5rem`;
+            return (
+              <section key={board.contestId} aria-label={`${board.organizationName} leaderboard`} className="overflow-hidden rounded-2xl border border-white/10 bg-white/[0.03]">
+                <header className="flex flex-wrap items-baseline justify-between gap-3 border-b border-white/10 px-5 py-4">
+                  <div>
+                    <h2 className="text-xl font-semibold sm:text-2xl">{board.organizationName}</h2>
+                    <p className="mt-1 text-sm text-slate-400">{board.contestName} · Live</p>
+                  </div>
+                  {board.isCurrentOrganization ? <span className="rounded-full bg-amber-300/10 px-3 py-1 text-xs font-medium text-amber-100">Your organisation</span> : null}
+                </header>
+                <div className="overflow-x-auto p-5">
+                  <div className="min-w-max">
+                    <div className="mb-2 grid items-center gap-4 border-b border-white/10 pb-2 text-sm uppercase tracking-wider text-slate-300" style={{ gridTemplateColumns }}>
+                      <span className="text-right">#</span>
+                      <span>Name</span>
+                      {categories.map((category) => (
+                        <span key={category.id} className="text-center" title={category.name} aria-label={category.name}>
+                          <CategoryIcon name={category.name} />
+                          <span className="sr-only">{category.name}</span>
+                        </span>
+                      ))}
+                      <span className="text-right">Points</span>
+                    </div>
+                    {board.rows.length ? (
+                      <ol className="divide-y divide-white/10">
+                        {board.rows.map((row) => (
+                          <li key={row.member_id} className={`grid items-center gap-4 py-3 text-lg sm:text-xl ${row.rank === 1 ? 'text-amber-300' : row.rank === 2 ? 'text-slate-200' : row.rank === 3 ? 'text-orange-300' : ''} ${row.rank === null ? 'text-slate-500' : ''}`} style={{ gridTemplateColumns }}>
+                            <span className="text-right tabular-nums">{row.rank ?? ''}</span>
+                            <span className="truncate font-medium">{row.display_name}</span>
+                            {categories.map((category) => (
+                              <span key={category.id} className="text-center tabular-nums">{row.category_counts?.[category.id] ?? 0}</span>
+                            ))}
+                            <span className="text-right font-semibold tabular-nums">{row.points ?? 0}</span>
+                          </li>
+                        ))}
+                      </ol>
+                    ) : <p className="py-4 text-slate-400">No active participants yet.</p>}
+                  </div>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+        <div className="mt-10 text-sm text-slate-400">
           <button className="underline" onClick={() => document.documentElement.requestFullscreen?.()}>Full screen</button>
         </div>
       </div>

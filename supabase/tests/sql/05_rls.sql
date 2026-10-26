@@ -7,9 +7,11 @@ declare r record; allowed_rpcs text[] := array[
   'get_leaderboard','get_admin_leaderboard','get_contest_banner','create_submission_draft','withdraw_submission',
   'my_resubmission_allowance','my_submissions','claim_submission','approve_submission','reject_submission',
   'reverse_submission','correct_rejection','grant_override','set_member_active','upsert_category',
-  'set_category_active','update_contest_setup','set_points_unlocked','extend_deadline','publish_final',
+  'set_category_active','update_contest_setup','set_points_unlocked','extend_deadline','end_contest','publish_final',
   'reopen_contest','owner_mark_exported','archive_contest','owner_add_admin','owner_set_admin_active',
-  'is_admin','is_owner','is_member','current_contest_id'];
+  'is_admin','is_owner','is_member','is_platform_admin','current_organization_id',
+  'current_contest_id','is_org_admin','is_org_owner','platform_owner_create_organization',
+  'create_next_contest','get_contest_history'];
 begin
   -- anon: no table privileges, no function privileges (in the whole public schema)
   for r in select c.oid, c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
@@ -29,7 +31,7 @@ begin
            where n.nspname = 'public' and c.relkind in ('r','S') loop
     perform t.ok(not has_table_privilege('authenticated', r.oid, 'insert,update,delete,truncate'), 'authenticated cannot write ' || r.relname);
     perform t.eq(has_table_privilege('authenticated', r.oid, 'select'),
-                 r.relname in ('contests','members','admins','categories','submissions','audit_log'),
+                 r.relname in ('contests','members','admins','categories','submissions','audit_log','organizations'),
                  'authenticated select on ' || r.relname);
   end loop;
   -- every table has RLS on
@@ -40,6 +42,11 @@ begin
   -- service role cannot rewrite the audit log either
   perform t.ok(not has_table_privilege('service_role', 'public.audit_log', 'insert,update,delete,truncate'), 'service_role cannot write audit_log');
   perform t.ok(has_table_privilege('service_role', 'public.submissions', 'select,insert,update,delete'), 'service_role keeps normal access');
+  perform t.ok(not has_table_privilege('authenticated', 'public.contest_history', 'select,insert,update,delete'), 'history table is not directly accessible');
+  perform t.ok(has_table_privilege('service_role', 'public.contest_history', 'select'), 'cleanup can read expired history');
+  perform t.ok(not has_table_privilege('service_role', 'public.contest_history', 'delete'), 'cleanup must use the expiry-checked RPC');
+  perform t.ok(has_function_privilege('service_role', 'public.purge_expired_contest_history(uuid[])', 'execute'), 'service role can purge expired history');
+  perform t.ok(not has_function_privilege('authenticated', 'public.purge_expired_contest_history(uuid[])', 'execute'), 'users cannot purge history');
 end $$;
 rollback to sp;
 savepoint sp;
@@ -72,7 +79,7 @@ begin
 
   -- anon
   perform t.login_anon();
-  foreach tbl in array array['contests','members','admins','categories','submissions','audit_log','key_requests','login_failures'] loop
+  foreach tbl in array array['contests','members','admins','categories','submissions','audit_log','organizations','key_requests','login_failures'] loop
     perform t.fails('select * from public.' || tbl, 'permission denied');
   end loop;
   perform t.fails($q$select * from get_leaderboard()$q$, 'permission denied');
@@ -141,6 +148,7 @@ begin
   perform t.fails($q$update submissions set status = 'approved'$q$, 'permission denied');
   perform t.fails($q$select set_points_unlocked(true, 'x')$q$, 'forbidden');
   perform t.fails($q$select extend_deadline(now() + interval '9 days', 'x')$q$, 'forbidden');
+  perform t.fails($q$select end_contest('x')$q$, 'forbidden');
   perform t.fails($q$select update_contest_setup('n', now(), now() + interval '1 day', 5)$q$, 'forbidden');
   perform t.fails($q$select publish_final('x')$q$, 'forbidden');
   perform t.fails($q$select reopen_contest('x')$q$, 'forbidden');

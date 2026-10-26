@@ -115,6 +115,8 @@ begin
   perform t.ok(not (select active from admins where id = own2), 'another owner can be removed');
   perform t.ok((select active from admins where id = own), 'the acting owner stays active');
   perform t.ok(exists (select 1 from audit_log where action = 'admin.added' and actor_id = own and actor_type = 'admin'), 'admin.added audited with owner as actor');
+  perform t.eq((select organization_id from audit_log where action = 'admin.added' and actor_id = own limit 1),
+               (select id from organizations where slug = 'default'), 'admin audit is tenant-scoped');
   perform t.ok(exists (select 1 from audit_log where action = 'admin.removed' and entity_id = adm), 'admin.removed audited');
   -- an admin who is also a member email is rejected
   perform t.mk_member('mem@x.test', 'Mem');

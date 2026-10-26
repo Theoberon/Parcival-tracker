@@ -18,7 +18,6 @@ Needs Node 20+ and Git.
 
 ```bash
 git clone https://github.com/Theoberon/Parcival-tracker && cd Parcival-tracker
-git checkout claude/build-plan-execution-j1yu7b
 cd web && npm install
 npm run preview        # sample data, no Supabase needed -> http://localhost:3000
 ```

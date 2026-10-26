@@ -11,7 +11,7 @@ import { createClient, type SupabaseClient } from 'npm:@supabase/supabase-js@2';
 interface Deps {
   env: (name: string) => string | undefined;
   /** Client acting as the logged-in user (RLS applies, auth.uid() is set). */
-  userClient: (token: string) => SupabaseClient;
+  userClient: (token: string, organizationId?: string) => SupabaseClient;
   /** Client with only the public anon key (for verifying a password like the browser would). */
   anon: () => SupabaseClient;
   /** Service-role client. Only for work the user must not do themselves (storage, auth admin). */
@@ -32,9 +32,14 @@ function realDeps(): Deps {
   let admin: SupabaseClient | undefined;
   return {
     env: (n) => Deno.env.get(n),
-    userClient: (token) =>
+    userClient: (token, organizationId) =>
       createClient(need('SUPABASE_URL'), need('SUPABASE_ANON_KEY'), {
-        global: { headers: { Authorization: `Bearer ${token}` } },
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(organizationId ? { 'x-organization-id': organizationId } : {}),
+          },
+        },
         auth: { persistSession: false, autoRefreshToken: false },
       }),
     anon: () =>
@@ -68,7 +73,7 @@ async function authenticate(deps: Deps, token: string | null): Promise<{ id: str
 // Small HTTP helpers shared by all Edge Functions.
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-organization-id',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 

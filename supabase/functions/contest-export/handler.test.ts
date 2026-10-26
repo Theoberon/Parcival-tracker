@@ -88,7 +88,9 @@ Deno.test('export: standings + full (paginated) audit log as CSV, export recorde
   assert(b.standings_csv.includes('HubSpot Specialist'), 'titles are exported');
   const lines = b.audit_csv.trim().split('\r\n');
   assertEquals(lines.length, 1 + 1000 + 1, 'both pages included');
-  assertEquals(f.userCalls.filter((c) => c.name === 'from:audit_log:select').map((c) => c.args[1]), [[0, 999], [1000, 1999]]);
+  const auditQueries = f.userCalls.filter((c) => c.name === 'from:audit_log:select');
+  assertEquals(auditQueries.map((c) => c.args[0]), [[['contest_id', 'eq', 'c1']], [['contest_id', 'eq', 'c1']]]);
+  assertEquals(auditQueries.map((c) => c.args[1]), [[0, 999], [1000, 1999]]);
 });
 
 Deno.test('export before results are final still works but is not marked as the archive export', async () => {

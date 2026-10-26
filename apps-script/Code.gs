@@ -17,13 +17,17 @@ var SCRIPT_COLUMNS = ['Member ID', 'Key version', 'Key issued at', 'Sync status'
 
 /** Installable trigger: Form submit. */
 function onFormSubmit(e) {
+  if (!e || !e.range || typeof e.range.getSheet !== 'function' || typeof e.range.getRow !== 'function') {
+    console.error('onFormSubmit received no spreadsheet range. Install the form-submit trigger from the response spreadsheet using installTriggers; reconcile will retry the response.');
+    return;
+  }
   withLock_(function () {
     var sheet = e.range.getSheet();
     var c = columns_(sheet);
     var row = e.range.getRow();
     // Already handled (e.g. by the reconcile picking up a missed row first)? Do not rotate twice.
     if (readRow_(sheet, row, c).syncStatus) return;
-    processRegistration_(sheet, row, c, {});
+    processRegistration_(sheet, row, c);
   });
 }
 
@@ -47,7 +51,6 @@ function reconcile() {
       catch (err) { errors.push('row ' + row + ': ' + err.message); }
     }
     try { writeOrphans_(sheet, c); } catch (err) { errors.push('orphans: ' + err.message); }
-    try { autoCloseForm_(); } catch (err) { errors.push('form: ' + err.message); }
     if (errors.length) console.error('reconcile problems: ' + errors.join(' | '));
   });
 }
@@ -88,7 +91,7 @@ function menuSyncSelected() {
     var c = columns_(sheet);
     var d = readRow_(sheet, row, c);
     if (d.memberId && (d.syncStatus === 'OK' || /^Sync error/.test(d.syncStatus))) pushChanges_(sheet, row, c);
-    else processRegistration_(sheet, row, c, { retry: /^Failed/.test(d.syncStatus) });
+    else processRegistration_(sheet, row, c);
   });
   ui.alert('Row ' + row + ': ' + readRow_(sheet, row, columns_(sheet)).syncStatus);
 }
@@ -127,11 +130,9 @@ function menuShowQuota() {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Create or rotate, then email. opts.retry = this row failed earlier (it may still be honoured if
- * the person registered before the contest ended).
+ * Create, then email. Existing organisation members keep their current key.
  */
-function processRegistration_(sheet, row, c, opts) {
-  opts = opts || {};
+function processRegistration_(sheet, row, c) {
   var d = readRow_(sheet, row, c);
   var set = function (name, value) { setCell_(sheet, row, c, name, value); };
   var finish = function (status) { set('Sync status', status); set('Last synced', new Date()); };
@@ -140,11 +141,6 @@ function processRegistration_(sheet, row, c, opts) {
   if (!d.displayName) return finish('Rejected: display name missing');
 
   try {
-    var status = effectiveStatus_();
-    var registrationOpen = status === 'setup' || status === 'open';
-    if (!registrationOpen && !(opts.retry && registeredBeforeEnd_(d.timestamp))) {
-      return finish('Registration closed');
-    }
     if (isAdminEmail_(d.email)) return finish('Admin email — rejected');
 
     var existing = findMemberByEmail_(d.email);
@@ -153,16 +149,19 @@ function processRegistration_(sheet, row, c, opts) {
       set('Active', false);
       return finish('Deactivated — no key sent');
     }
-    if (MailApp.getRemainingDailyQuota() < 1) throw new Error('email quota exhausted for today');
-
     var issued;
     if (existing) {
-      issued = rotateKey_(existing);
-      if (d.title && d.title !== existing.title) issued.member = sbPatch_('members', 'id=eq.' + existing.id, { title: d.title })[0];
-      issued.note = 'Registered again: key rotated, the previous key no longer works.';
-    } else {
-      issued = createMember_(d);
+      if (d.title && d.title !== existing.title) {
+        existing = updateMemberProfile_(existing, { title: d.title });
+      }
+      writeExistingMember_(sheet, row, c, existing);
+      set('Notes', 'Returning participant — existing login key retained.');
+      finish('OK');
+      deliverExistingNotice_(sheet, row, c, existing);
+      return;
     }
+    if (MailApp.getRemainingDailyQuota() < 1) throw new Error('email quota exhausted for today');
+    issued = createMember_(d);
     writeIssued_(sheet, row, c, issued.member, d);
     set('Notes', issued.note || '');
     finish('OK');
@@ -172,24 +171,34 @@ function processRegistration_(sheet, row, c, opts) {
   }
 }
 
-/** New member: Auth user (email + key as password) then members row. */
+/** Create Auth identity, then atomically add the organisation roster and current contest row. */
 function createMember_(d) {
   var key = generateKey();
-  var name = uniqueDisplayName_(d.displayName, null);
   var userId;
   try {
     userId = authCreateUser_(d.email, key).id;
   } catch (err) {
     if (err.status !== 422 && err.code !== 'email_exists') throw err;
-    // A previous attempt created the Auth user but not the members row: adopt it.
+    // A previous attempt created the Auth user but not the organisation roster: adopt it.
     userId = sbRpc_('auth_user_id_by_email', { p_email: d.email });
     if (!userId) throw err;
+    if (findMemberById_(userId) || findContestMemberById_(userId)) {
+      throw new Error('This email is already assigned to another contest or organisation. Use a different email.');
+    }
     authUpdateUser_(userId, { password: key, email_confirm: true });
   }
-  var member = sbInsert_('members', { id: userId, contest_id: contestId_(), email: d.email, display_name: name, title: d.title || null });
+  var rows = sbRpc_('register_organization_member', {
+    p_organization_id: organizationId_(),
+    p_member_id: userId,
+    p_email: d.email,
+    p_display_name: d.displayName,
+    p_title: d.title || null
+  });
+  var member = rows && rows.length ? rows[0] : null;
+  if (!member) throw new Error('Supabase did not return the new organisation member.');
   return {
     member: member, key: key, rotated: false,
-    note: name !== d.displayName ? 'Display name "' + d.displayName + '" was taken; using "' + name + '".' : ''
+    note: member.display_name !== d.displayName ? 'Display name "' + d.displayName + '" was taken; using "' + member.display_name + '".' : ''
   };
 }
 
@@ -198,8 +207,16 @@ function rotateKey_(member) {
   var key = generateKey();
   authUpdateUser_(member.id, { password: key });
   revokeSessions_(member.id);
-  var updated = sbPatch_('members', 'id=eq.' + member.id, { key_version: member.key_version + 1 })[0];
+  var updated = sbPatch_('organization_members', 'id=eq.' + member.id, { key_version: member.key_version + 1 })[0];
+  sbPatch_('members', 'id=eq.' + member.id, { key_version: updated.key_version });
   return { member: updated, key: key, rotated: true, note: '' };
+}
+
+function updateMemberProfile_(member, changes) {
+  var updated = sbPatch_('organization_members', 'id=eq.' + member.id, changes)[0];
+  if (!updated) throw new Error('Organisation member not found in Supabase.');
+  sbPatch_('members', 'id=eq.' + member.id, changes);
+  return updated;
 }
 
 /** Used by the website's "Resend my key" (via doPost) and the menu. Returns false if nobody was emailed. */
@@ -235,6 +252,34 @@ function writeIssued_(sheet, row, c, member, d) {
   set('Synced fingerprint', fingerprint_(d.displayName, d.title, true));
 }
 
+function writeExistingMember_(sheet, row, c, member) {
+  setCell_(sheet, row, c, 'Member ID', member.id);
+  setCell_(sheet, row, c, 'Key version', member.key_version);
+  setActiveCell_(sheet, row, c, true);
+  setCell_(sheet, row, c, 'Synced fingerprint', fingerprint_(member.display_name, member.title, member.active));
+}
+
+/** Notify returning participants without rotating or revealing their existing key. */
+function deliverExistingNotice_(sheet, row, c, member) {
+  var status;
+  try {
+    var site = cfg_('SITE_URL').replace(/\/+$/, '');
+    var body = [
+      'Hi ' + member.display_name + ',', '',
+      'You are already registered for this contest. Your existing login key is unchanged; use it to log in.',
+      '', 'Log in: ' + site + '/login', '',
+      'If you lost your key, use "Resend my key" on the login page. That will issue a new key and invalidate the old one.',
+      '', 'Questions? ' + cfg_('SUPPORT_CONTACT')
+    ].join('\n');
+    MailApp.sendEmail({ to: member.email, subject: 'Your contest account is ready', body: body, name: 'Contest' });
+    status = 'Existing account — key unchanged';
+  } catch (err) {
+    status = 'Existing account — notice failed: ' + err.message;
+  }
+  setCell_(sheet, row, c, 'Email status', status);
+  return status;
+}
+
 /** Email the key and record the outcome. Never throws. */
 function deliverKey_(sheet, row, c, issued) {
   var status;
@@ -267,11 +312,11 @@ function sendKeyEmail_(to, displayName, key, issued) {
 function reconcileRow_(sheet, row, c) {
   var d = readRow_(sheet, row, c);
   if (!d.email) return;
-  if (/^Failed/.test(d.syncStatus)) return processRegistration_(sheet, row, c, { retry: true });
+  if (/^Failed/.test(d.syncStatus)) return processRegistration_(sheet, row, c);
   if (!d.syncStatus) {
     // Form trigger missed it? Give onFormSubmit 5 minutes before stepping in.
     var age = (new Date() - new Date(d.timestamp)) / 60000;
-    if (isNaN(age) || age >= 5) processRegistration_(sheet, row, c, {});
+    if (isNaN(age) || age >= 5) processRegistration_(sheet, row, c);
     return;
   }
   if (d.memberId && d.syncStatus === 'OK' && /^Failed/.test(d.emailStatus)) {
@@ -296,13 +341,13 @@ function pushChanges_(sheet, row, c) {
     var now = parseFingerprint_(fpNow);
     if (old.name !== now.name && d.displayName) {
       var wanted = uniqueDisplayName_(d.displayName, member.id);
-      if (wanted !== member.display_name) sbPatch_('members', 'id=eq.' + member.id, { display_name: wanted });
+      if (wanted !== member.display_name) member = updateMemberProfile_(member, { display_name: wanted });
     }
     if (old.title !== now.title && (d.title || null) !== (member.title || null)) {
-      sbPatch_('members', 'id=eq.' + member.id, { title: d.title || null });
+      member = updateMemberProfile_(member, { title: d.title || null });
     }
     if (old.active !== now.active && activeNow !== member.active) {
-      sbPatch_('members', 'id=eq.' + member.id, { active: activeNow });
+      updateMemberProfile_(member, { active: activeNow });
       if (activeNow) unbanUser_(member.id);
       else { banUser_(member.id); revokeSessions_(member.id); }
     }
@@ -329,11 +374,6 @@ function writeOrphans_(sheet, c) {
   if (orphans.length) {
     tab.getRange(2, 1, orphans.length, 4).setValues(orphans.map(function (m) { return [m.id, m.email, m.display_name, m.active]; }));
   }
-}
-
-function autoCloseForm_() {
-  var status = effectiveStatus_();
-  if (status === 'closed' || status === 'final' || status === 'archived') closeForm_();
 }
 
 function closeForm_() {
@@ -425,11 +465,6 @@ function locateRow_(email) {
     if (normalizeEmail_(emails[i][0]) === email) return { sheet: sheet, row: i + 2, c: c };
   }
   return null;
-}
-
-function registeredBeforeEnd_(timestamp) {
-  var t = new Date(timestamp);
-  return !isNaN(t) && t <= new Date(contestRow_().end_at);
 }
 
 // ---------------------------------------------------------------------------------------------

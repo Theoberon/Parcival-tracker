@@ -48,35 +48,31 @@ function unbanUser_(id) { return authUpdateUser_(id, { ban_duration: 'none' }); 
 function revokeSessions_(id) { return sbRpc_('revoke_user_sessions', { p_user: id }); }
 
 function q_(v) { return encodeURIComponent(v); }
-function contestId_() { return cfg_('CONTEST_ID'); }
-
-function contestRow_() {
-  var rows = sbSelect_('contests', 'id=eq.' + contestId_() + '&select=id,start_at,end_at,grace_minutes');
-  if (!rows || !rows.length) throw new Error('Contest ' + contestId_() + ' not found');
-  return rows[0];
-}
-/** setup | open | closed | final | archived */
-function effectiveStatus_() { return sbRpc_('contest_effective_status', { p_contest: contestId_() }); }
+function organizationId_() { return cfg_('ORGANIZATION_ID'); }
 
 function isAdminEmail_(email) {
   return sbSelect_('admins', 'email=eq.' + q_(email) + '&select=id').length > 0;
 }
 function findMemberByEmail_(email) {
-  var rows = sbSelect_('members', 'contest_id=eq.' + contestId_() + '&email=eq.' + q_(email) + '&select=*');
+  var rows = sbSelect_('organization_members', 'organization_id=eq.' + organizationId_() + '&email=eq.' + q_(email) + '&select=*');
   return rows.length ? rows[0] : null;
 }
 function findMemberById_(id) {
-  var rows = sbSelect_('members', 'id=eq.' + id + '&select=*');
+  var rows = sbSelect_('organization_members', 'id=eq.' + id + '&select=*');
+  return rows.length ? rows[0] : null;
+}
+function findContestMemberById_(id) {
+  var rows = sbSelect_('members', 'id=eq.' + id + '&select=id,organization_id');
   return rows.length ? rows[0] : null;
 }
 function listMembers_() {
-  return sbSelect_('members', 'contest_id=eq.' + contestId_() + '&select=id,email,display_name,active&order=registered_at');
+  return sbSelect_('organization_members', 'organization_id=eq.' + organizationId_() + '&select=id,email,display_name,active&order=registered_at');
 }
 
 /** "Ann", then "Ann 2", "Ann 3"... Case-insensitive; ignores the member's own current name. */
 function uniqueDisplayName_(name, excludeMemberId) {
   var base = name.slice(0, 50);
-  var rows = sbSelect_('members', 'contest_id=eq.' + contestId_() + '&display_name=ilike.' + q_(base + '*') + '&select=id,display_name');
+  var rows = sbSelect_('organization_members', 'organization_id=eq.' + organizationId_() + '&display_name=ilike.' + q_(base + '*') + '&select=id,display_name');
   var taken = {};
   rows.forEach(function (r) { if (r.id !== excludeMemberId) taken[r.display_name.toLowerCase()] = true; });
   var candidate = base, n = 1;

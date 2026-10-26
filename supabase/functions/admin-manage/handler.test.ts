@@ -66,6 +66,15 @@ Deno.test('invite: creates the Auth invite, then registers the admin as the owne
   assertEquals(add.args[0], { p_user: '11111111-1111-4111-8111-111111111111', p_email: 'new@x.test', p_role: 'admin' });
 });
 
+Deno.test('organisation context is forwarded to the user-scoped client', async () => {
+  const f = setup('owner');
+  const request = post({ action: 'invite_admin', email: 'new@x.test', role: 'admin' }, 'user-jwt', {
+    'x-organization-id': ID,
+  });
+  assertEquals((await handle(request, f.deps)).status, 200);
+  assertEquals(f.userCalls[0].args, ['user-jwt', ID]);
+});
+
 Deno.test('invite: a member email is refused; a failed registration removes the Auth user', async () => {
   const f = setup('owner', { memberExists: true });
   assertEquals((await handle(post({ action: 'invite_admin', email: 'm@x.test', role: 'admin' }), f.deps)).status, 409);

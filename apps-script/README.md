@@ -17,7 +17,7 @@ never store it (Supabase keeps a bcrypt hash as the member's Auth password).
 Settings:
 - **Collect email addresses: "Responder input"** (validated). No Google sign-in required.
 - **Allow response editing: OFF.**
-- Limit to 1 response: OFF (people re-register to get a new key).
+- Limit to 1 response: OFF (a returning participant can register again without changing their existing key).
 
 Questions (the titles matter: the script finds columns by these words):
 1. `Full name` (short answer, required)
@@ -27,10 +27,10 @@ Questions (the titles matter: the script finds columns by these words):
    with the pattern `^YOUR-CODE$`, so only the exact code passes (escape any regex characters in the code).
    The code lives only in the Form; never put it in Git or in this script.
 5. Consent checkbox, required, text:
-   > I agree that my name, email and title are used to run this contest, and that my display name will be visible to other team members on the leaderboard.
+   > I agree that my name, email and title are used to manage organisation contests, and that my display name will be visible to other participants on the leaderboard.
 
 Confirmation message:
-> You're registered. Your login key is on its way by email. Check spam or Promotions if it hasn't arrived in a few minutes.
+> You're on the organisation roster. First-time participants receive a login key by email; returning participants should use their existing key. You'll join the next contest automatically.
 
 Then **Responses → Link to Sheets** (create a new spreadsheet). Keep the tab name `Form Responses 1`
 (or set the `RESPONSES_SHEET` property). Never sort, insert or delete columns in the Form-owned columns.
@@ -50,7 +50,7 @@ Project Settings → **Script Properties**:
 |---|---|
 | `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
 | `SUPABASE_SERVICE_KEY` | Supabase **service_role** key (Settings → API). Never share, never commit |
-| `CONTEST_ID` | the contest's `id` (`select id from contests;`) |
+| `ORGANIZATION_ID` | the organisation's `id` (`select id from organizations where slug = 'your-slug';`) |
 | `RESEND_SHARED_SECRET` | a long random string; the same value goes into the Edge Function secret |
 | `SITE_URL` | the Vercel URL, e.g. `https://contest.example.com` (no trailing slash needed) |
 | `SUPPORT_CONTACT` | e.g. an email address or "ask Sam in the team chat" |
@@ -63,6 +63,11 @@ Run `installTriggers` once from the editor (authorize when asked). It creates:
 - **Time-driven, every 10 minutes** → `reconcile`
 
 Safe to run again; it replaces its own triggers.
+Run it in the Apps Script project opened from the **response spreadsheet** (Extensions → Apps
+Script), not from the Google Form. The spreadsheet's form-submit event provides the response row
+range that `onFormSubmit` needs. If Apps Script reports "no spreadsheet range", the trigger is
+attached to a Form instead; install the triggers again from the response spreadsheet. The
+10-minute reconciliation will recover missed responses.
 
 ## 5. Web app (for "Resend my key")
 
@@ -77,26 +82,31 @@ script, **Deploy → Manage deployments → edit → New version** (the URL stay
 
 ## 6. What it does
 
-**New registration** (Form submit): validates the email → checks the contest is `setup`/`open`
-→ rejects admin emails → creates the Supabase Auth user (email pre-confirmed, normalized key as password)
-+ `members` row → writes `Member ID`, `Key version`, `Key issued at`, `Sync status`, `Last synced`,
-`Active`, `Synced fingerprint` → emails the key → writes `Email status`.
-The same email registering again **rotates** the key (old key stops working, sessions revoked).
-A taken display name becomes `Name 2`, `Name 3`… and the member is told in the email.
+**New onboarding** (Form submit): validates the email → rejects admin emails → creates the Supabase
+Auth user (email pre-confirmed, normalized key as password) and adds the person to the persistent
+`organization_members` roster. If the organisation has a contest in `setup`/`open`, the same
+transaction adds a `members` row to that contest. Otherwise the person remains on the roster and is
+automatically enrolled when the owner starts the next contest. The Form can therefore stay open
+between contests. It is one Form, response Sheet and Apps Script project per organisation, not per
+contest. If an older script already closed the Form when a contest ended, re-open **Accepting
+responses** once in the Form; this script no longer closes it automatically.
+
+If an active participant on the organisation roster registers again, the account and existing key
+are kept; a notice email tells them to use their current key. The separate **Resend my key** flow
+still issues a replacement key and invalidates the old one. A taken display name becomes `Name 2`,
+`Name 3`… and the member is told in the email.
 
 **Reconcile (every 10 min):**
 - retries rows whose `Sync status` starts with `Failed` (with a **new** key: the failed one was never delivered)
 - rows whose email failed get a fresh key and a new email
 - pushes Sheet edits: display name changes, **Title** changes (clear the cell to remove a title), and the **Active** checkbox (untick = member is deactivated and
   banned in Supabase; tick again = restored). DB-side changes are never overwritten, only Sheet edits are pushed.
-- lists Supabase members without a Sheet row on an `Orphans` tab (never deletes them)
-- closes the Form automatically once the contest is `closed`/`final`/`archived`
-  (if the owner extends the deadline, re-open the Form by hand: Responses → "Accepting responses")
+- lists organisation roster members without a Sheet row on an `Orphans` tab (never deletes them)
 
 **Contest menu:** sync selected row, sync all, resend key for selected row, close registration now,
 and the remaining daily email quota (personal Gmail: about 100 emails a day; a Workspace account gets more).
 
-Sync statuses you may see: `OK`, `Registration closed`, `Admin email — rejected`,
+Sync statuses you may see: `OK`, `Admin email — rejected`,
 `Deactivated — no key sent`, `Rejected: …`, `Failed: …` (will be retried), `Sync error: …` (edit push will be retried).
 
 ## 7. Tests
@@ -105,9 +115,10 @@ Sync statuses you may see: `OK`, `Registration closed`, `Admin email — rejecte
 cd apps-script && npm test
 ```
 Runs the real `.gs` files in Node with in-memory fakes of Sheets/Mail/Form and of Supabase
-(PostgREST + GoTrue admin API). It covers: create, rotate (old key dies), admin email rejected,
-Supabase down → failed → reconcile recovers, Active checkbox bans/unbans, closed registration, Form
-auto-close, name collisions, the resend endpoint (secret, unknown emails, quota), and key
+(PostgREST + GoTrue admin API). It covers: create, preserve an existing key on re-registration,
+admin email rejected, always-on organisation onboarding, roster-only registrations while contests
+are closed, Supabase down → failed → reconcile recovers, Active checkbox bans/unbans, name
+collisions, the resend endpoint (secret, unknown emails, quota), and key
 generation/normalization (`"k7rm-qx4p 9wab"` → `"K7RMQX4P9WAB"`).
 The fakes do not prove behaviour against the real Google and Supabase services, so do the launch
 checklist's end-to-end registration test with a real teammate.

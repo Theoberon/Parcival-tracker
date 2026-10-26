@@ -63,7 +63,7 @@ const forbiddenRpc = (r) => r.status === 403 && /forbidden|not_member|permission
 const NOBODY = '00000000-0000-0000-0000-000000000000';   // matches zero rows: a granted write succeeds harmlessly
 
 const TABLES = ['contests', 'members', 'admins', 'categories', 'submissions', 'audit_log', 'key_requests', 'login_failures'];
-const ADMIN_RPCS = [['get_admin_leaderboard', {}], ['claim_submission', { p_id: crypto.randomUUID() }], ['approve_submission', { p_id: crypto.randomUUID() }],
+const ADMIN_RPCS = [['get_admin_leaderboard', {}], ['get_running_organization_leaderboards', {}], ['claim_submission', { p_id: crypto.randomUUID() }], ['approve_submission', { p_id: crypto.randomUUID() }],
   ['reject_submission', { p_id: crypto.randomUUID(), p_reason_code: 'other', p_reason_text: 'x' }], ['reverse_submission', { p_id: crypto.randomUUID(), p_reason: 'x' }],
   ['correct_rejection', { p_id: crypto.randomUUID(), p_reason: 'x' }], ['grant_override', { p_id: crypto.randomUUID(), p_reason: 'x' }],
   ['set_member_active', { p_member: crypto.randomUUID(), p_active: false }], ['upsert_category', { p_id: null, p_name: 'x', p_points: 1, p_reference_label: 'x', p_reference_hint: '', p_sort_order: 1 }],
@@ -127,6 +127,7 @@ if (admin) {
   check((await get('audit_log?select=id&limit=1', admin.token)).ok, 'can read the audit log');
   check(denied(await get('key_requests?select=*', admin.token)), 'cannot read key_requests');
   check((await rpc('is_owner', admin.token)).json === false, 'is not an owner');
+  check((await rpc('get_running_organization_leaderboards', admin.token)).ok, 'can compare running organisation leaderboards');
   for (const [n, a] of OWNER_RPCS) check(forbiddenRpc(await rpc(n, admin.token, a)), `cannot call owner RPC ${n}`);
   for (const [n, a] of SERVICE_RPCS) check(denied(await rpc(n, admin.token, a)), `cannot call ${n}`);
   check(denied(await call('PATCH', `submissions?id=eq.${NOBODY}`, admin.token, { status: 'approved' })), 'cannot write submissions directly');

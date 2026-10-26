@@ -15,6 +15,8 @@ test('registration: creates the auth user + member, writes the Sheet, emails the
   assert.equal(e.sb.members[0].display_name, 'Jane Doe');
   assert.equal(e.sb.users.size, 1);
   assert.equal(e.sb.members[0].id, [...e.sb.users.keys()][0], 'members.id = auth user id');
+  assert.equal(e.sb.organizationMembers.length, 1, 'new participant is on the persistent organisation roster');
+  assert.equal(e.sb.organizationMembers[0].organization_id, e.sb.organizationId);
 
   // email: the key works as the password, however the member types it
   assert.equal(e.sent.length, 1);
@@ -45,7 +47,23 @@ test('registration: creates the auth user + member, writes the Sheet, emails the
   assert.ok(!JSON.stringify(e.state).includes(key.replace(/-/g, '')));
 });
 
-test('registering again with the same email rotates the key; the old key stops working', () => {
+test('form trigger without a spreadsheet range logs setup guidance and reconcile recovers the response', () => {
+  const e = makeEnv();
+  const row = e.sheet.addResponse({
+    email: 'jane@example.com',
+    timestamp: new Date(Date.now() - NEXT),
+  });
+
+  assert.doesNotThrow(() => e.ctx.onFormSubmit({ response: {} }));
+  assert.match(e.state.errors[0], /Install the form-submit trigger from the response spreadsheet/);
+  assert.equal(e.sheet.val(row, 'Sync status'), '');
+
+  e.ctx.reconcile();
+  assert.equal(e.sheet.val(row, 'Sync status'), 'OK');
+  assert.equal(e.sb.organizationMembers.length, 1);
+});
+
+test('registering again with the same email keeps the existing key and account', () => {
   const e = makeEnv();
   e.submit({ email: 'jane@example.com', displayName: 'Jane' });
   const oldKey = e.lastKey();
@@ -53,17 +71,28 @@ test('registering again with the same email rotates the key; the old key stops w
   assert.ok(e.sb.login('jane@example.com', oldKey));
 
   const row2 = e.submit({ email: 'JANE@example.com', displayName: 'Whatever' });
-  const newKey = e.lastKey();
-  assert.notEqual(newKey, oldKey);
   assert.equal(e.sb.members.length, 1, 'still one member');
   assert.equal(e.sb.members[0].id, id, 'Member ID kept');
   assert.equal(e.sb.members[0].display_name, 'Jane', 'display name unchanged');
-  assert.equal(e.sb.members[0].key_version, 2);
-  assert.equal(e.sb.login('jane@example.com', oldKey), false, 'old key rejected');
-  assert.ok(e.sb.login('jane@example.com', newKey), 'new key works');
-  assert.equal(e.sb.sessions.get(id), 0, 'sessions revoked');
-  assert.equal(e.sheet.val(row2, 'Key version'), 2);
-  assert.match(e.sent[1].body, /NEW contest login key/);
+  assert.equal(e.sb.members[0].key_version, 1);
+  assert.ok(e.sb.login('jane@example.com', oldKey), 'existing key remains valid');
+  assert.equal(e.sb.sessions.get(id), 1, 'sessions remain valid');
+  assert.equal(e.sheet.val(row2, 'Key version'), 1);
+  assert.equal(e.sheet.val(row2, 'Email status'), 'Existing account — key unchanged');
+  assert.match(e.sent[1].body, /existing login key is unchanged/);
+});
+
+test('failed returning-member notice does not trigger a key rotation on reconcile', () => {
+  const e = makeEnv();
+  e.submit({ email: 'jane@example.com', displayName: 'Jane' });
+  const key = e.lastKey();
+  e.state.mailFails = true;
+  const row = e.submit({ email: 'jane@example.com', displayName: 'Jane' });
+  assert.match(e.sheet.val(row, 'Email status'), /^Existing account — notice failed:/);
+  e.state.mailFails = false;
+  e.ctx.reconcile();
+  assert.equal(e.sb.members[0].key_version, 1);
+  assert.ok(e.sb.login('jane@example.com', key));
 });
 
 test('admin emails are rejected: no account, no email', () => {
@@ -76,14 +105,16 @@ test('admin emails are rejected: no account, no email', () => {
   assert.equal(e.sent.length, 0);
 });
 
-test('registration closes with the contest', () => {
+test('onboarding remains open across contest states and stores closed-contest signups in the roster', () => {
   for (const status of ['closed', 'final', 'archived']) {
     const e = makeEnv();
     e.sb.status = status;
     const row = e.submit({ email: 'late@example.com' });
-    assert.equal(e.sheet.val(row, 'Sync status'), 'Registration closed');
-    assert.equal(e.sb.users.size, 0);
-    assert.equal(e.sent.length, 0);
+    assert.equal(e.sheet.val(row, 'Sync status'), 'OK');
+    assert.equal(e.sb.users.size, 1);
+    assert.equal(e.sb.organizationMembers.length, 1);
+    assert.equal(e.sb.members.length, 0, 'closed contest signups wait in the organisation roster');
+    assert.equal(e.sent.length, 1);
   }
   const e = makeEnv();
   e.sb.status = 'setup';
@@ -91,13 +122,13 @@ test('registration closes with the contest', () => {
   assert.equal(e.sb.members.length, 1, 'registration is open before the contest starts');
 });
 
-test('the Form is closed automatically once the contest closes', () => {
+test('the Form remains open after contests close so people can join the organisation', () => {
   const e = makeEnv();
   e.ctx.reconcile();
   assert.equal(e.form.accepting, true, 'stays open while the contest is open');
-  e.sb.status = 'closed';
+  e.sb.status = 'final';
   e.ctx.reconcile();
-  assert.equal(e.form.accepting, false);
+  assert.equal(e.form.accepting, true);
 });
 
 test('taken display names get a number suffix, noted in the Sheet and the email', () => {
@@ -128,21 +159,18 @@ test('Supabase down: row marked failed, no email; the reconcile recovers it with
   assert.ok(e.sb.login('jane@example.com', e.lastKey()));
 });
 
-test('retry after a failure is honoured even if the contest closed in the meantime', () => {
+test('failed onboarding retries even if the contest closes in the meantime', () => {
   const e = makeEnv();
   e.sb.down = true;
   const row = e.submit({ email: 'jane@example.com', timestamp: new Date(Date.now() - 3600e3) });
   e.sb.down = false;
-  e.sb.status = 'closed';
-  e.sb.contest.end_at = new Date(Date.now() - 60e3).toISOString();    // ended a minute ago, after she registered
+  e.sb.status = 'final';
   e.ctx.reconcile();
   assert.equal(e.sheet.val(row, 'Sync status'), 'OK');
-  // but a registration made AFTER the end is not rescued
-  e.sb.down = true;
   const row2 = e.submit({ email: 'late@example.com', timestamp: new Date() });
-  e.sb.down = false;
-  e.ctx.reconcile();
-  assert.equal(e.sheet.val(row2, 'Sync status'), 'Registration closed');
+  assert.equal(e.sheet.val(row2, 'Sync status'), 'OK', 'new signups are also accepted after the contest');
+  assert.equal(e.sb.members.length, 0);
+  assert.equal(e.sb.organizationMembers.length, 2);
 });
 
 test('half-finished earlier attempt (auth user exists, no member row) is adopted on retry', () => {
@@ -153,6 +181,23 @@ test('half-finished earlier attempt (auth user exists, no member row) is adopted
   assert.equal(e.sb.members[0].id, 'orphan-id');
   assert.equal(e.sb.login('jane@example.com', 'OLDOLDOLD123'), false);
   assert.ok(e.sb.login('jane@example.com', e.lastKey()));
+});
+
+test('an Auth account assigned to another organisation is rejected without rotating its key', () => {
+  const e = makeEnv();
+  const firstRow = e.submit({ email: 'jane@example.com', displayName: 'Jane' });
+  const oldKey = e.lastKey();
+  e.sb.organizationMembers[0].organization_id = 'another-organization';
+  e.sb.members[0].organization_id = 'another-organization';
+  e.sb.members[0].contest_id = 'another-contest';
+
+  const secondRow = e.submit({ email: 'jane@example.com', displayName: 'Jane' });
+
+  assert.match(e.sheet.val(secondRow, 'Sync status'), /already assigned to another contest or organisation/);
+  assert.equal(e.sb.members.length, 1);
+  assert.equal(e.sb.login('jane@example.com', oldKey), true);
+  assert.equal(e.sent.length, 1);
+  assert.equal(e.sheet.val(firstRow, 'Sync status'), 'OK');
 });
 
 test('unticking Active bans the member; ticking it again restores access', () => {
@@ -194,14 +239,17 @@ test('DB-side deactivation is not undone by the reconcile (only Sheet edits are 
   const e = makeEnv();
   e.submit({ email: 'jane@example.com' });
   e.sb.members[0].active = false;           // an admin deactivated her in the website
+  e.sb.organizationMembers[0].active = false;
   e.ctx.reconcile();
   assert.equal(e.sb.members[0].active, false);
+  assert.equal(e.sb.organizationMembers[0].active, false);
 });
 
 test('a deactivated member who registers again gets no key', () => {
   const e = makeEnv();
   e.submit({ email: 'jane@example.com' });
   e.sb.members[0].active = false;
+  e.sb.organizationMembers[0].active = false;
   const row = e.submit({ email: 'jane@example.com' });
   assert.equal(e.sheet.val(row, 'Sync status'), 'Deactivated — no key sent');
   assert.equal(e.sent.length, 1);
@@ -248,13 +296,13 @@ test('an already-handled row is not processed twice by the Form trigger', () => 
 test('members without a Sheet row are listed on an Orphans tab, never deleted', () => {
   const e = makeEnv();
   e.submit({ email: 'a@example.com', displayName: 'Ann' });
-  e.sb.members.push({ id: 'ghost', contest_id: 'contest-1', email: 'ghost@example.com', display_name: 'Ghost', active: true, key_version: 1 });
+  e.sb.organizationMembers.push({ id: 'ghost', organization_id: e.sb.organizationId, email: 'ghost@example.com', display_name: 'Ghost', active: true, key_version: 1 });
   e.ctx.reconcile();
   const tab = e.orphansSheets['Orphans'];
   assert.equal(tab.get(2, 1), 'ghost');
   assert.equal(tab.get(2, 2), 'ghost@example.com');
   assert.equal(tab.getLastRow(), 2);
-  assert.equal(e.sb.members.length, 2, 'nothing deleted');
+  assert.equal(e.sb.organizationMembers.length, 2, 'nothing deleted');
 });
 
 test('invalid emails are rejected without calling Supabase', () => {
@@ -354,12 +402,12 @@ test('title: a row synced by the older version (two-part fingerprint) gets its t
   assert.match(e.sheet.val(row, 'Synced fingerprint'), /^[0-9a-f]{16}\|[0-9a-f]{16}\|1$/);
 });
 
-test('title: registering again with a new title updates it while the key rotates', () => {
+test('title: registering again with a new title updates it while preserving the key', () => {
   const e = makeEnv();
   e.submit({ email: 'a@example.com', displayName: 'Ann', title: 'Designer' });
   e.submit({ email: 'a@example.com', displayName: 'Ann', title: 'Design Lead' });
   assert.equal(e.sb.members[0].title, 'Design Lead');
-  assert.equal(e.sb.members[0].key_version, 2);
+  assert.equal(e.sb.members[0].key_version, 1);
   e.submit({ email: 'a@example.com', displayName: 'Ann' });    // no title this time: keep the one we have
   assert.equal(e.sb.members[0].title, 'Design Lead');
 });

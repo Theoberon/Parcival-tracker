@@ -106,6 +106,7 @@ export interface ContestRow {
   name: string;
   start_at: string;
   end_at: string;
+  ended_at: string | null;
   grace_minutes: number;
   manual_status: string;
   points_unlocked: boolean;

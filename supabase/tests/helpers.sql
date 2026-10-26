@@ -67,7 +67,11 @@ begin insert into public.members (id, contest_id, email, display_name) values (v
 
 create function t.mk_admin(p_email text, p_role public.admin_role default 'admin') returns uuid language plpgsql as $$
 declare v uuid := t.mk_user(p_email);
-begin insert into public.admins (id, email, role) values (v, p_email, p_role); return v; end $$;
+begin
+  insert into public.admins (id, email, role, organization_id)
+  values (v, p_email, p_role, (select id from public.organizations where slug = 'default'));
+  return v;
+end $$;
 
 -- Move the contest in time. Bypasses guard triggers on purpose (test-only; needs superuser).
 create function t.set_times(p_start timestamptz, p_end timestamptz, p_grace int default 10) returns void language plpgsql as $$
